@@ -1,0 +1,26 @@
+# Python environment, caches and test output
+.venv/
+.packages/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and data
+.env
+.env.*
+!.env.example
+backend/*.db
+backend/*.db-*
+backend/*.sqlite*
+.vscode/
+
+# Flutter and Dart generated files
+app/.dart_tool/
+app/build/
+app/coverage/
+app/windows/flutter/generated_plugin_registrant.*
+app/windows/flutter/generated_plugins.cmake
