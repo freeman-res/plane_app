@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/api_client.dart';
 import '../projects/project.dart';
 import '../projects/project_dialog.dart';
+import 'calendar_month.dart';
+import 'task_calendar.dart';
 import 'task.dart';
 import 'task_dialog.dart';
 
@@ -10,6 +14,8 @@ const _ink = Color(0xFF192B45);
 const _muted = Color(0xFF78879C);
 const _blue = Color(0xFF4269EF);
 const _line = Color(0xFFE7ECF4);
+
+enum _TaskView { board, list, calendar }
 
 class TasksPage extends StatefulWidget {
   const TasksPage({super.key});
@@ -22,9 +28,24 @@ class _TasksPageState extends State<TasksPage> {
   final _api = ApiClient();
   final _search = TextEditingController();
   List<Task> _tasks = [];
+  List<Task>? _filteredTasks;
   List<Project> _projects = [];
   int? _selectedProjectId;
-  bool _boardView = true;
+  _TaskView _view = _TaskView.board;
+  String? _sortBy;
+  bool _descending = false;
+  String? _statusFilter;
+  String? _priorityFilter;
+  String? _tagFilter;
+  bool _overdueOnly = false;
+  int _taskRequest = 0;
+  Timer? _midnightRefresh;
+  DateTime _displayMonth = DateTime(DateTime.now().year, DateTime.now().month);
+  int? _selectedDay = DateTime.now().day;
+  CalendarMonth? _calendar;
+  bool _calendarLoading = false;
+  String? _calendarError;
+  int _calendarRequest = 0;
   bool _loading = true;
   bool _saving = false;
   String? _error;
@@ -33,38 +54,173 @@ class _TasksPageState extends State<TasksPage> {
   void initState() {
     super.initState();
     _search.addListener(_onSearchChanged);
+    _scheduleMidnightRefresh();
     _loadTasks();
   }
 
+  void _scheduleMidnightRefresh() {
+    _midnightRefresh?.cancel();
+    final now = DateTime.now();
+    final nextDay = DateTime(
+      now.year,
+      now.month,
+      now.day + 1,
+    ).add(const Duration(seconds: 2));
+    _midnightRefresh = Timer(nextDay.difference(now), () {
+      if (!mounted) return;
+      _refresh();
+      _scheduleMidnightRefresh();
+    });
+  }
+
   void _onSearchChanged() => setState(() {});
+
+  bool get _hasFilters =>
+      _statusFilter != null ||
+      _priorityFilter != null ||
+      _tagFilter != null ||
+      _overdueOnly;
 
   @override
   void dispose() {
     _search.removeListener(_onSearchChanged);
     _search.dispose();
+    _midnightRefresh?.cancel();
     _api.close();
     super.dispose();
   }
 
   Future<void> _loadTasks() async {
+    final request = ++_taskRequest;
+    final projectId = _selectedProjectId;
+    final status = _statusFilter;
+    final priority = _priorityFilter;
+    final tag = _tagFilter;
+    final overdue = _overdueOnly;
+    final sortBy = _sortBy;
+    final descending = _descending;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final projects = await _api.getProjects();
-      final tasks = await _api.getTasks();
-      if (mounted) {
+      final tasks = await _api.getTasks(sortBy: sortBy, descending: descending);
+      List<Task>? filtered;
+      if (status != null || priority != null || tag != null || overdue) {
+        final selectedProject = projectId != null && projectId > 0
+            ? projectId
+            : null;
+        filtered =
+            overdue &&
+                status == null &&
+                priority == null &&
+                tag == null &&
+                sortBy == null
+            ? await _api.getOverdueTasks(projectId: selectedProject)
+            : await _api.getTasks(
+                projectId: selectedProject,
+                sortBy: sortBy,
+                descending: descending,
+                status: status,
+                priority: priority,
+                tag: tag,
+                overdue: overdue ? true : null,
+              );
+      }
+      if (mounted && request == _taskRequest) {
         setState(() {
           _projects = projects;
           _tasks = tasks;
+          _filteredTasks = filtered;
         });
       }
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted && request == _taskRequest) {
+        setState(() => _error = error.toString());
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && request == _taskRequest) {
+        setState(() => _loading = false);
+      }
     }
+  }
+
+  Future<void> _loadCalendar() async {
+    final request = ++_calendarRequest;
+    final month = _displayMonth;
+    final projectId = _selectedProjectId;
+    setState(() {
+      _calendarLoading = true;
+      _calendarError = null;
+    });
+    try {
+      final calendar = await _api.getCalendar(
+        year: month.year,
+        month: month.month,
+        projectId: projectId != null && projectId > 0 ? projectId : null,
+      );
+      if (mounted &&
+          request == _calendarRequest &&
+          _displayMonth.year == month.year &&
+          _displayMonth.month == month.month &&
+          _selectedProjectId == projectId) {
+        setState(() => _calendar = calendar);
+      }
+    } catch (error) {
+      if (mounted && request == _calendarRequest) {
+        setState(() => _calendarError = error.toString());
+      }
+    } finally {
+      if (mounted && request == _calendarRequest) {
+        setState(() => _calendarLoading = false);
+      }
+    }
+  }
+
+  void _changeMonth(DateTime month) {
+    final today = DateTime.now();
+    setState(() {
+      _displayMonth = DateTime(month.year, month.month);
+      _selectedDay = month.year == today.year && month.month == today.month
+          ? today.day
+          : null;
+      _calendar = null;
+    });
+    _loadCalendar();
+  }
+
+  void _changeSort(String? sortBy) {
+    setState(() => _sortBy = sortBy);
+    _loadTasks();
+  }
+
+  void _changeFilters({
+    String? status,
+    String? priority,
+    String? tag,
+    bool? overdue,
+    bool changeStatus = false,
+    bool changePriority = false,
+    bool changeTag = false,
+  }) {
+    setState(() {
+      if (changeStatus) _statusFilter = status;
+      if (changePriority) _priorityFilter = priority;
+      if (changeTag) _tagFilter = tag;
+      if (overdue != null) _overdueOnly = overdue;
+    });
+    _loadTasks();
+  }
+
+  void _changeView(_TaskView view) {
+    setState(() => _view = view);
+    if (view == _TaskView.calendar) _loadCalendar();
+  }
+
+  Future<void> _refresh() async {
+    await _loadTasks();
+    if (mounted && _view == _TaskView.calendar) await _loadCalendar();
   }
 
   Future<void> _perform(Future<void> Function() action) async {
@@ -72,7 +228,10 @@ class _TasksPageState extends State<TasksPage> {
     setState(() => _saving = true);
     try {
       await action();
-      if (mounted) await _loadTasks();
+      if (mounted) {
+        await _loadTasks();
+        if (mounted && _view == _TaskView.calendar) await _loadCalendar();
+      }
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -83,7 +242,7 @@ class _TasksPageState extends State<TasksPage> {
     }
   }
 
-  Future<void> _createTask() async {
+  Future<void> _createTask({String status = 'todo'}) async {
     final draft = await showDialog<TaskDraft>(
       context: context,
       builder: (context) => TaskDialog(
@@ -91,6 +250,7 @@ class _TasksPageState extends State<TasksPage> {
         selectedProjectId: _selectedProjectId != null && _selectedProjectId! > 0
             ? _selectedProjectId
             : null,
+        selectedStatus: status,
       ),
     );
     if (draft == null || !mounted) return;
@@ -99,6 +259,11 @@ class _TasksPageState extends State<TasksPage> {
         draft.title,
         draft.description,
         projectId: draft.projectId,
+        startDate: draft.startDate,
+        status: draft.status,
+        deadline: draft.deadline,
+        priority: draft.priority,
+        tags: draft.tags,
       );
     });
   }
@@ -115,6 +280,12 @@ class _TasksPageState extends State<TasksPage> {
         draft.title,
         draft.description,
         projectId: draft.projectId,
+        startDate: draft.startDate,
+        status: draft.status,
+        deadline: draft.deadline,
+        updateDeadline: true,
+        priority: draft.priority,
+        tags: draft.tags,
       );
     });
   }
@@ -189,14 +360,58 @@ class _TasksPageState extends State<TasksPage> {
     await _perform(() => _api.deleteTask(task.id));
   }
 
+  Future<void> _setStatus(Task task, String status) async {
+    if (task.status == status) return;
+    await _perform(() => _api.updateStatus(task.id, status));
+  }
+
+  Future<void> _reschedule(Task task) async {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final start = DateTime.tryParse(task.startDate ?? '') ?? today;
+    final earliest = start.isAfter(today) ? start : today;
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: earliest,
+      firstDate: earliest,
+      lastDate: DateTime(2100),
+    );
+    if (selected == null || !mounted) return;
+    final date =
+        '${selected.year.toString().padLeft(4, '0')}-'
+        '${selected.month.toString().padLeft(2, '0')}-'
+        '${selected.day.toString().padLeft(2, '0')}';
+    await _perform(() => _api.updateDeadline(task.id, date));
+  }
+
+  void _openOverdue(bool drawer) {
+    setState(() {
+      _selectedProjectId = null;
+      _overdueOnly = true;
+      _statusFilter = null;
+      _priorityFilter = null;
+      _tagFilter = null;
+      _view = _TaskView.list;
+    });
+    _loadTasks();
+    if (drawer) Navigator.of(context).pop();
+  }
+
   void _selectProject(int? id, bool drawer) {
-    setState(() => _selectedProjectId = id);
+    setState(() {
+      _selectedProjectId = id;
+      _overdueOnly = false;
+      if (_view == _TaskView.calendar) _calendar = null;
+    });
+    if (_hasFilters) _loadTasks();
+    if (_view == _TaskView.calendar) _loadCalendar();
     if (drawer) Navigator.of(context).pop();
   }
 
   List<Task> get _visibleTasks {
     final query = _search.text.trim().toLowerCase();
-    return _tasks.where((task) {
+    return (_hasFilters ? _filteredTasks ?? const <Task>[] : _tasks).where((
+      task,
+    ) {
       final matchesProject =
           _selectedProjectId == null ||
           (_selectedProjectId == -1
@@ -205,11 +420,62 @@ class _TasksPageState extends State<TasksPage> {
       return matchesProject &&
           (query.isEmpty ||
               task.title.toLowerCase().contains(query) ||
-              task.description.toLowerCase().contains(query));
+              task.description.toLowerCase().contains(query) ||
+              task.tags.any((tag) => tag.toLowerCase().contains(query)));
     }).toList();
   }
 
+  Map<int, List<Task>> get _calendarTasksByDay {
+    final result = <int, List<Task>>{};
+    final query = _search.text.trim().toLowerCase();
+    for (final day in _calendar?.days ?? const <CalendarDay>[]) {
+      final date = DateTime.tryParse(day.date);
+      if (date == null) continue;
+      result[date.day] = day.tasks.where((task) {
+        return (_selectedProjectId != -1 || task.projectId == null) &&
+            (_statusFilter == null || task.status == _statusFilter) &&
+            (_priorityFilter == null || task.priority == _priorityFilter) &&
+            (_tagFilter == null ||
+                task.tags.any(
+                  (tag) => tag.toLowerCase() == _tagFilter!.toLowerCase(),
+                )) &&
+            (!_overdueOnly || task.isOverdue) &&
+            (query.isEmpty ||
+                task.title.toLowerCase().contains(query) ||
+                task.description.toLowerCase().contains(query) ||
+                task.tags.any((tag) => tag.toLowerCase().contains(query)));
+      }).toList();
+    }
+    return result;
+  }
+
+  List<String> get _availableTags {
+    final names = <String, String>{};
+    for (final task in _tasks) {
+      for (final tag in task.tags) {
+        names.putIfAbsent(tag.toLowerCase(), () => tag);
+      }
+    }
+    if (_tagFilter != null) {
+      names.putIfAbsent(_tagFilter!.toLowerCase(), () => _tagFilter!);
+    }
+    return names.values.toList()..sort(
+      (left, right) => left.toLowerCase().compareTo(right.toLowerCase()),
+    );
+  }
+
+  void _clearFilters() {
+    setState(() {
+      _statusFilter = null;
+      _priorityFilter = null;
+      _tagFilter = null;
+      _overdueOnly = false;
+    });
+    _loadTasks();
+  }
+
   String get _pageTitle {
+    if (_overdueOnly && _selectedProjectId == null) return 'Просрочено';
     if (_selectedProjectId == null) return 'Все задачи';
     if (_selectedProjectId == -1) return 'Без проекта';
     for (final project in _projects) {
@@ -255,9 +521,16 @@ class _TasksPageState extends State<TasksPage> {
               _navigationRow(
                 'Все задачи',
                 Icons.grid_view_rounded,
-                _selectedProjectId == null,
+                _selectedProjectId == null && !_overdueOnly,
                 _tasks.length,
                 () => _selectProject(null, drawer),
+              ),
+              _navigationRow(
+                'Просрочено',
+                Icons.warning_amber_rounded,
+                _overdueOnly && _selectedProjectId == null,
+                _tasks.where((task) => task.isOverdue).length,
+                () => _openOverdue(drawer),
               ),
               _navigationRow(
                 'Без проекта',
@@ -387,11 +660,75 @@ class _TasksPageState extends State<TasksPage> {
     );
   }
 
+  Color _priorityColor(String priority) => switch (priority) {
+    'high' => const Color(0xFFDA5262),
+    'low' => const Color(0xFF358E83),
+    _ => const Color(0xFFB77925),
+  };
+
+  String _priorityLabel(String priority) => switch (priority) {
+    'high' => 'Высокий',
+    'low' => 'Низкий',
+    _ => 'Средний',
+  };
+
+  String _statusLabel(String status) => switch (status) {
+    'in_progress' => 'В работе',
+    'done' => 'Готово',
+    _ => 'Сделать',
+  };
+
+  Widget _tag(IconData icon, String label, Color foreground, Color background) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: foreground),
+          const SizedBox(width: 5),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 160),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: foreground,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _taskCard(Task task) {
     final project = _projects.where((item) => item.id == task.projectId);
+    final started = DateTime.tryParse(task.startDate ?? '');
+    final due = DateTime.tryParse(task.deadline ?? '');
+    final today = DateTime.now();
+    final overdue =
+        due != null &&
+        !task.isDone &&
+        DateTime(
+          due.year,
+          due.month,
+          due.day,
+        ).isBefore(DateTime(today.year, today.month, today.day));
+    final dueLabel = due == null
+        ? null
+        : '${due.day.toString().padLeft(2, '0')}.'
+              '${due.month.toString().padLeft(2, '0')}.'
+              '${due.year}';
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.fromLTRB(10, 12, 7, 12),
+      padding: const EdgeInsets.fromLTRB(12, 14, 7, 14),
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border.all(color: _line),
@@ -411,12 +748,7 @@ class _TasksPageState extends State<TasksPage> {
             value: task.isDone,
             onChanged: _saving
                 ? null
-                : (_) => _perform(
-                    () => _api.updateStatus(
-                      task.id,
-                      task.isDone ? 'todo' : 'done',
-                    ),
-                  ),
+                : (_) => _setStatus(task, task.isDone ? 'todo' : 'done'),
           ),
           Expanded(
             child: InkWell(
@@ -446,18 +778,110 @@ class _TasksPageState extends State<TasksPage> {
                         style: const TextStyle(color: _muted, height: 1.4),
                       ),
                     ],
-                    if (project.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      Chip(
-                        label: Text(
-                          project.first.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                    const SizedBox(height: 14),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 7,
+                      children: [
+                        if (task.isOverdue)
+                          _tag(
+                            Icons.warning_amber_rounded,
+                            'Просрочено',
+                            const Color(0xFFCD4354),
+                            const Color(0xFFFFECEF),
+                          ),
+                        if (started != null)
+                          _tag(
+                            Icons.play_arrow_rounded,
+                            'С ${started.day.toString().padLeft(2, '0')}.'
+                            '${started.month.toString().padLeft(2, '0')}.'
+                            '${started.year}',
+                            _muted,
+                            const Color(0xFFF0F3F8),
+                          ),
+                        _tag(
+                          Icons.flag_outlined,
+                          _priorityLabel(task.priority),
+                          _priorityColor(task.priority),
+                          _priorityColor(task.priority).withValues(alpha: 0.10),
                         ),
-                        backgroundColor: const Color(0xFFEDF2FF),
-                        labelStyle: const TextStyle(color: _blue, fontSize: 11),
-                        side: BorderSide.none,
-                        visualDensity: VisualDensity.compact,
+                        if (dueLabel != null)
+                          _tag(
+                            Icons.calendar_today_outlined,
+                            overdue ? 'Просрочено · $dueLabel' : dueLabel,
+                            overdue ? const Color(0xFFDA5262) : _muted,
+                            overdue
+                                ? const Color(0xFFFFECEF)
+                                : const Color(0xFFF0F3F8),
+                          ),
+                        if (project.isNotEmpty)
+                          _tag(
+                            Icons.folder_outlined,
+                            project.first.name,
+                            _blue,
+                            const Color(0xFFEDF2FF),
+                          ),
+                        for (final tag in task.tags)
+                          _tag(
+                            Icons.sell_outlined,
+                            tag,
+                            const Color(0xFF6558A6),
+                            const Color(0xFFF2EFFF),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    PopupMenuButton<String>(
+                      tooltip: 'Изменить статус',
+                      enabled: !_saving,
+                      onSelected: (value) => _setStatus(task, value),
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'todo', child: Text('Сделать')),
+                        PopupMenuItem(
+                          value: 'in_progress',
+                          child: Text('В работе'),
+                        ),
+                        PopupMenuItem(value: 'done', child: Text('Готово')),
+                      ],
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _statusLabel(task.status),
+                              style: const TextStyle(
+                                color: _muted,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const Icon(
+                              Icons.arrow_drop_down,
+                              size: 18,
+                              color: _muted,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (task.isOverdue) ...[
+                      const SizedBox(height: 9),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          TextButton.icon(
+                            onPressed: _saving ? null : () => _reschedule(task),
+                            icon: const Icon(Icons.event_repeat, size: 16),
+                            label: const Text('Перенести срок'),
+                          ),
+                          TextButton.icon(
+                            onPressed: _saving ? null : () => _deleteTask(task),
+                            icon: const Icon(Icons.delete_outline, size: 16),
+                            label: const Text('Удалить'),
+                          ),
+                        ],
                       ),
                     ],
                   ],
@@ -484,6 +908,7 @@ class _TasksPageState extends State<TasksPage> {
 
   Widget _boardColumn(
     String title,
+    String status,
     List<Task> tasks,
     Color accent,
     double width,
@@ -493,7 +918,7 @@ class _TasksPageState extends State<TasksPage> {
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7FC),
+          color: const Color(0xFFF4F6FB),
           border: Border.all(color: _line),
           borderRadius: BorderRadius.circular(15),
         ),
@@ -515,21 +940,31 @@ class _TasksPageState extends State<TasksPage> {
                 const SizedBox(width: 8),
                 Text('${tasks.length}', style: const TextStyle(color: _muted)),
                 const Spacer(),
-                if (title == 'Сделать')
-                  IconButton(
-                    tooltip: 'Добавить задачу',
-                    onPressed: _saving ? null : _createTask,
-                    icon: const Icon(Icons.add_rounded, color: _muted),
-                  ),
+                IconButton(
+                  tooltip: 'Добавить задачу в «$title»',
+                  onPressed: _saving ? null : () => _createTask(status: status),
+                  icon: const Icon(Icons.add_rounded, color: _muted),
+                ),
               ],
             ),
             const SizedBox(height: 12),
             if (tasks.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(12),
-                child: Text(
-                  'Здесь пока пусто',
-                  style: TextStyle(color: _muted),
+              SizedBox(
+                height: 180,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.inbox_outlined,
+                      size: 28,
+                      color: accent.withValues(alpha: 0.65),
+                    ),
+                    const SizedBox(height: 9),
+                    const Text(
+                      'Здесь пока пусто',
+                      style: TextStyle(color: _muted, fontSize: 13),
+                    ),
+                  ],
                 ),
               ),
             for (final task in tasks) _taskCard(task),
@@ -539,13 +974,40 @@ class _TasksPageState extends State<TasksPage> {
     );
   }
 
+  Widget _viewSelector() => SegmentedButton<_TaskView>(
+    segments: const [
+      ButtonSegment(
+        value: _TaskView.board,
+        icon: Icon(Icons.view_kanban_outlined),
+        label: Text('Доска'),
+      ),
+      ButtonSegment(
+        value: _TaskView.list,
+        icon: Icon(Icons.view_list_rounded),
+        label: Text('Список'),
+      ),
+      ButtonSegment(
+        value: _TaskView.calendar,
+        icon: Icon(Icons.calendar_month_outlined),
+        label: Text('Календарь'),
+      ),
+    ],
+    selected: {_view},
+    onSelectionChanged: (value) => _changeView(value.first),
+  );
+
   Widget _content(double width, bool mobile) {
     final tasks = _visibleTasks;
     final done = tasks.where((task) => task.isDone).toList();
-    final pending = tasks.where((task) => !task.isDone).toList();
+    final pending = tasks.where((task) => task.status == 'todo').toList();
+    final inProgress = tasks
+        .where((task) => task.status == 'in_progress')
+        .toList();
     final padding = mobile ? 18.0 : 32.0;
     final available = width - 2 * padding;
-    final columnWidth = mobile ? 300.0 : (available - 16) / 2;
+    final columnWidth = mobile
+        ? 300.0
+        : ((available - 32) / 3).clamp(290.0, 480.0);
 
     return Column(
       children: [
@@ -597,23 +1059,67 @@ class _TasksPageState extends State<TasksPage> {
                       ),
                     ),
                   ),
-                  SegmentedButton<bool>(
-                    segments: const [
-                      ButtonSegment(
-                        value: true,
-                        icon: Icon(Icons.view_kanban_outlined),
-                        label: Text('Доска'),
+                  if (mobile)
+                    SizedBox(
+                      width: available,
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: _viewSelector(),
                       ),
-                      ButtonSegment(
-                        value: false,
-                        icon: Icon(Icons.view_list_rounded),
-                        label: Text('Список'),
+                    )
+                  else
+                    _viewSelector(),
+                  if (_view != _TaskView.calendar)
+                    SizedBox(
+                      width: 195,
+                      child: DropdownButtonFormField<String>(
+                        key: ValueKey(_sortBy),
+                        initialValue: _sortBy ?? 'none',
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Сортировка',
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 9,
+                          ),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'none',
+                            child: Text('По умолчанию'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'priority',
+                            child: Text('По приоритету'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'deadline',
+                            child: Text('По дедлайну'),
+                          ),
+                        ],
+                        onChanged: _loading
+                            ? null
+                            : (value) =>
+                                  _changeSort(value == 'none' ? null : value),
                       ),
-                    ],
-                    selected: {_boardView},
-                    onSelectionChanged: (value) =>
-                        setState(() => _boardView = value.first),
-                  ),
+                    ),
+                  if (_view != _TaskView.calendar)
+                    IconButton(
+                      tooltip: _descending
+                          ? 'Обратный порядок'
+                          : 'Основной порядок',
+                      onPressed: _sortBy == null || _loading
+                          ? null
+                          : () {
+                              setState(() => _descending = !_descending);
+                              _loadTasks();
+                            },
+                      icon: Icon(
+                        _descending
+                            ? Icons.arrow_upward_rounded
+                            : Icons.arrow_downward_rounded,
+                      ),
+                    ),
                   FilledButton.icon(
                     onPressed: _saving ? null : _createTask,
                     icon: const Icon(Icons.add_rounded),
@@ -621,9 +1127,101 @@ class _TasksPageState extends State<TasksPage> {
                   ),
                   IconButton(
                     tooltip: 'Обновить',
-                    onPressed: _loading || _saving ? null : _loadTasks,
+                    onPressed: _loading || _saving ? null : _refresh,
                     icon: const Icon(Icons.refresh_rounded),
                   ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 158,
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey('status-\$_statusFilter'),
+                      initialValue: _statusFilter ?? 'all',
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Статус'),
+                      items: const [
+                        DropdownMenuItem(value: 'all', child: Text('Все')),
+                        DropdownMenuItem(value: 'todo', child: Text('Сделать')),
+                        DropdownMenuItem(
+                          value: 'in_progress',
+                          child: Text('В работе'),
+                        ),
+                        DropdownMenuItem(value: 'done', child: Text('Готово')),
+                      ],
+                      onChanged: _loading
+                          ? null
+                          : (value) => _changeFilters(
+                              status: value == 'all' ? null : value,
+                              changeStatus: true,
+                            ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 158,
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey('priority-\$_priorityFilter'),
+                      initialValue: _priorityFilter ?? 'all',
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Приоритет'),
+                      items: const [
+                        DropdownMenuItem(value: 'all', child: Text('Все')),
+                        DropdownMenuItem(value: 'high', child: Text('Высокий')),
+                        DropdownMenuItem(
+                          value: 'medium',
+                          child: Text('Средний'),
+                        ),
+                        DropdownMenuItem(value: 'low', child: Text('Низкий')),
+                      ],
+                      onChanged: _loading
+                          ? null
+                          : (value) => _changeFilters(
+                              priority: value == 'all' ? null : value,
+                              changePriority: true,
+                            ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 190,
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey('tag-\$_tagFilter'),
+                      initialValue: _tagFilter ?? '',
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Тег'),
+                      items: [
+                        const DropdownMenuItem(
+                          value: '',
+                          child: Text('Все теги'),
+                        ),
+                        for (final tag in _availableTags)
+                          DropdownMenuItem(value: tag, child: Text(tag)),
+                      ],
+                      onChanged: _loading
+                          ? null
+                          : (value) => _changeFilters(
+                              tag: value == '' ? null : value,
+                              changeTag: true,
+                            ),
+                    ),
+                  ),
+                  FilterChip(
+                    label: const Text('Просроченные'),
+                    avatar: const Icon(Icons.warning_amber_rounded, size: 18),
+                    selected: _overdueOnly,
+                    onSelected: _loading
+                        ? null
+                        : (value) => _changeFilters(overdue: value),
+                  ),
+                  if (_hasFilters)
+                    TextButton(
+                      onPressed: _loading ? null : _clearFilters,
+                      child: const Text('Сбросить фильтры'),
+                    ),
                 ],
               ),
               const SizedBox(height: 26),
@@ -636,14 +1234,14 @@ class _TasksPageState extends State<TasksPage> {
                       children: [
                         Text(_error!),
                         TextButton(
-                          onPressed: _loadTasks,
+                          onPressed: _refresh,
                           child: const Text('Повторить'),
                         ),
                       ],
                     ),
                   ),
                 ),
-              if (!_loading && tasks.isEmpty)
+              if (_view == _TaskView.list && !_loading && tasks.isEmpty)
                 Container(
                   padding: const EdgeInsets.symmetric(
                     vertical: 60,
@@ -675,7 +1273,7 @@ class _TasksPageState extends State<TasksPage> {
                     ],
                   ),
                 )
-              else if (_boardView)
+              else if (_view == _TaskView.board)
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(
@@ -683,19 +1281,42 @@ class _TasksPageState extends State<TasksPage> {
                     children: [
                       _boardColumn(
                         'Сделать',
+                        'todo',
                         pending,
                         const Color(0xFF5E83F5),
                         columnWidth,
                       ),
                       const SizedBox(width: 16),
                       _boardColumn(
+                        'В работе',
+                        'in_progress',
+                        inProgress,
+                        const Color(0xFFEAAC56),
+                        columnWidth,
+                      ),
+                      const SizedBox(width: 16),
+                      _boardColumn(
                         'Готово',
+                        'done',
                         done,
                         const Color(0xFF38B990),
                         columnWidth,
                       ),
                     ],
                   ),
+                )
+              else if (_view == _TaskView.calendar)
+                TaskCalendar(
+                  month: _displayMonth,
+                  tasksByDay: _calendarTasksByDay,
+                  selectedDay: _selectedDay,
+                  mobile: mobile,
+                  loading: _calendarLoading,
+                  error: _calendarError,
+                  onMonthChanged: _changeMonth,
+                  onDaySelected: (day) => setState(() => _selectedDay = day),
+                  onRetry: _loadCalendar,
+                  taskBuilder: _taskCard,
                 )
               else
                 ConstrainedBox(
