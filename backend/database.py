@@ -24,7 +24,9 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 description TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'todo',
-                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                deadline TEXT,
+                priority TEXT NOT NULL DEFAULT 'medium'
             )
             """
         )
@@ -33,5 +35,11 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE tasks ADD COLUMN project_id INTEGER "
                 "REFERENCES projects(id) ON DELETE SET NULL"
+            )
+        if "deadline" not in columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
+        if "priority" not in columns:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'"
             )
         conn.commit()

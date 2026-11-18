@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,6 +61,16 @@ class TasksApiTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             TaskUpdate(status="doing")
         with self.assertRaises(ValidationError):
+            TaskCreate(title="Bad", status="doing")
+        with self.assertRaises(ValidationError):
+            TaskCreate(title="Bad", priority="urgent")
+        with self.assertRaises(ValidationError):
+            TaskCreate(title="Bad", deadline="2026-02-30")
+        with self.assertRaises(ValidationError):
+            TaskUpdate(priority=None)
+        with self.assertRaises(ValidationError):
+            TaskUpdate(status=None)
+        with self.assertRaises(ValidationError):
             TaskUpdate(title="")
         with self.assertRaises(ValidationError):
             TaskUpdate(title=None)
@@ -72,6 +83,46 @@ class TasksApiTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as raised:
                 operation()
             self.assertEqual(raised.exception.status_code, 404)
+
+    def test_task_stages_deadline_and_priority_round_trip(self):
+        created = routes.create_task(
+            TaskCreate.model_validate_json(
+                '{"title":"Prepare report","status":"in_progress",'
+                '"deadline":"2026-12-15","priority":"high"}'
+            )
+        )
+        self.assertEqual(created.status, "in_progress")
+        self.assertEqual(created.deadline, date(2026, 12, 15))
+        self.assertEqual(created.priority, "high")
+        self.assertEqual(routes.get_tasks()[0], created)
+        self.assertEqual(
+            routes.get_tasks()[0].model_dump(mode="json")["deadline"],
+            "2026-12-15",
+        )
+
+        updated = routes.update_task(
+            created.id,
+            TaskUpdate(status="done", deadline=date(2026, 12, 20), priority="low"),
+        )
+        self.assertEqual(
+            (updated.status, updated.deadline, updated.priority),
+            ("done", date(2026, 12, 20), "low"),
+        )
+        updated = routes.update_task(
+            created.id, TaskUpdate.model_validate_json('{"deadline":null}')
+        )
+        self.assertIsNone(updated.deadline)
+        self.assertEqual(updated.status, "done")
+        self.assertEqual(updated.priority, "low")
+        self.assertEqual(routes.get_tasks()[0], updated)
+        self.assertEqual(routes.create_task(TaskCreate(title="Default")).priority, "medium")
+
+        with closing(sqlite3.connect(database.DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT status, deadline, priority FROM tasks WHERE id = ?",
+                (created.id,),
+            ).fetchone()
+        self.assertEqual(row, ("done", None, "low"))
 
     def test_documented_http_methods(self):
         methods = {
@@ -148,9 +199,38 @@ class TasksApiTests(unittest.TestCase):
         with closing(sqlite3.connect(legacy_path)) as conn:
             self.assertEqual(
                 conn.execute(
-                    "SELECT title, description, status, project_id FROM tasks"
+                    "SELECT title, description, status, project_id, deadline, priority "
+                    "FROM tasks"
                 ).fetchall(),
-                [("Old task", "Keep me", "done", None)],
+                [("Old task", "Keep me", "done", None, None, "medium")],
+            )
+
+    def test_project_era_database_migrates_without_losing_tasks(self):
+        old_path = Path(self.temp.name) / "old_projects.db"
+        with closing(sqlite3.connect(old_path)) as conn:
+            conn.execute(
+                "CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+            )
+            conn.execute("INSERT INTO projects (id, name) VALUES (1, 'Coursework')")
+            conn.execute(
+                "CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, "
+                "description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo', "
+                "project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL)"
+            )
+            conn.execute(
+                "INSERT INTO tasks (title, description, status, project_id) "
+                "VALUES ('First', '', 'todo', 1)"
+            )
+            conn.commit()
+        with patch.object(database, "DB_PATH", old_path):
+            database.init_db()
+            database.init_db()
+        with closing(sqlite3.connect(old_path)) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT title, project_id, status, deadline, priority FROM tasks"
+                ).fetchall(),
+                [("First", 1, "todo", None, "medium")],
             )
 
 if __name__ == "__main__":
