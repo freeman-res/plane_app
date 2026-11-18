@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../features/tasks/task.dart';
+import '../features/projects/project.dart';
 
 // Для Windows адрес по умолчанию указывает на FastAPI на этом же компьютере.
 // Для Android адрес можно переопределить через --dart-define=API_BASE_URL=...
@@ -51,8 +52,15 @@ class ApiClient {
     return response;
   }
 
-  Future<List<Task>> getTasks() async {
-    final response = await _send(_client.get(_uri('/tasks')));
+  Future<List<Task>> getTasks({int? projectId}) async {
+    final uri = _uri('/tasks');
+    final response = await _send(
+      _client.get(
+        projectId == null
+            ? uri
+            : uri.replace(queryParameters: {'project_id': '$projectId'}),
+      ),
+    );
     try {
       final data = jsonDecode(utf8.decode(response.bodyBytes)) as List<dynamic>;
       return data
@@ -63,12 +71,20 @@ class ApiClient {
     }
   }
 
-  Future<Task> createTask(String title, String description) async {
+  Future<Task> createTask(
+    String title,
+    String description, {
+    int? projectId,
+  }) async {
     final response = await _send(
       _client.post(
         _uri('/tasks'),
         headers: {'Content-Type': 'application/json; charset=utf-8'},
-        body: jsonEncode({'title': title, 'description': description}),
+        body: jsonEncode({
+          'title': title,
+          'description': description,
+          'project_id': projectId,
+        }),
       ),
     );
     return _taskFromResponse(response);
@@ -85,8 +101,61 @@ class ApiClient {
     return _taskFromResponse(response);
   }
 
+  Future<Task> editTask(
+    int id,
+    String title,
+    String description, {
+    int? projectId,
+  }) async {
+    final response = await _send(
+      _client.patch(
+        _uri('/tasks/$id'),
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+        body: jsonEncode({
+          'title': title,
+          'description': description,
+          'project_id': projectId,
+        }),
+      ),
+    );
+    return _taskFromResponse(response);
+  }
+
   Future<void> deleteTask(int id) async {
     await _send(_client.delete(_uri('/tasks/$id')));
+  }
+
+  Future<List<Project>> getProjects() async {
+    final response = await _send(_client.get(_uri('/projects')));
+    try {
+      final data = jsonDecode(utf8.decode(response.bodyBytes)) as List<dynamic>;
+      return data
+          .map((item) => Project.fromJson(item as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      throw const ApiException('Сервер вернул неверный список проектов.');
+    }
+  }
+
+  Future<Project> createProject(String name) async {
+    final response = await _send(
+      _client.post(
+        _uri('/projects'),
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+        body: jsonEncode({'name': name}),
+      ),
+    );
+    try {
+      return Project.fromJson(
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>,
+      );
+    } catch (_) {
+      throw const ApiException('Сервер вернул неверные данные проекта.');
+    }
+  }
+
+  Future<void> deleteProject(int id) async {
+    await _send(_client.delete(_uri('/projects/$id')));
   }
 
   Task _taskFromResponse(http.Response response) {
