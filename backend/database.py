@@ -28,7 +28,9 @@ def init_db() -> None:
                 project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
                 start_date TEXT,
                 deadline TEXT,
-                priority TEXT NOT NULL DEFAULT 'medium'
+                priority TEXT NOT NULL DEFAULT 'medium',
+                urgent INTEGER CHECK (urgent IS NULL OR urgent IN (0, 1)),
+                moscow TEXT CHECK (moscow IS NULL OR moscow IN ('must', 'should', 'could', 'wont'))
             )
             """
         )
@@ -46,6 +48,16 @@ def init_db() -> None:
             )
         if "start_date" not in columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN start_date TEXT")
+        if "urgent" not in columns:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN urgent INTEGER "
+                "CHECK (urgent IS NULL OR urgent IN (0, 1))"
+            )
+        if "moscow" not in columns:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN moscow TEXT "
+                "CHECK (moscow IS NULL OR moscow IN ('must', 'should', 'could', 'wont'))"
+            )
         today = date.today().isoformat()
         conn.execute(
             "UPDATE tasks SET start_date = CASE "
@@ -81,5 +93,57 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_task_tags_key "
             "ON task_tags(name_key, task_id)"
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS note_tasks (
+                note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                PRIMARY KEY (note_id, task_id)
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_note_tasks_task ON note_tasks(task_id)"
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS note_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                storage_name TEXT NOT NULL UNIQUE
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS schedule_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                first_date TEXT NOT NULL,
+                ends_on TEXT,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                repeat_every_weeks INTEGER NOT NULL CHECK (repeat_every_weeks IN (0, 1, 2))
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS schedule_exceptions (
+                entry_id INTEGER NOT NULL REFERENCES schedule_entries(id) ON DELETE CASCADE,
+                date TEXT NOT NULL,
+                PRIMARY KEY (entry_id, date)
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_schedule_project ON schedule_entries(project_id)"
         )
         conn.commit()

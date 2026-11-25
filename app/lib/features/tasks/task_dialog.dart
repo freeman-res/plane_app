@@ -10,6 +10,8 @@ class TaskDraft {
     this.projectId, {
     required this.status,
     required this.priority,
+    required this.urgent,
+    required this.moscow,
     required this.startDate,
     required this.tags,
     this.deadline,
@@ -20,6 +22,8 @@ class TaskDraft {
   final int? projectId;
   final String status;
   final String priority;
+  final bool? urgent;
+  final String? moscow;
   final String startDate;
   final List<String> tags;
   final String? deadline;
@@ -51,6 +55,8 @@ class _TaskDialogState extends State<TaskDialog> {
   int? _projectId;
   late String _status;
   late String _priority;
+  late String _urgency;
+  late String _moscow;
   late DateTime _startDate;
   DateTime? _deadline;
   bool _invalidDates = false;
@@ -66,6 +72,12 @@ class _TaskDialogState extends State<TaskDialog> {
         : widget.task!.projectId;
     _status = widget.task?.status ?? widget.selectedStatus;
     _priority = widget.task?.priority ?? 'medium';
+    _moscow = widget.task?.moscow ?? 'unassigned';
+    _urgency = switch (widget.task?.urgent) {
+      true => 'urgent',
+      false => 'not_urgent',
+      null => 'auto',
+    };
     _startDate =
         DateTime.tryParse(widget.task?.startDate ?? '') ??
         DateUtils.dateOnly(DateTime.now());
@@ -93,6 +105,12 @@ class _TaskDialogState extends State<TaskDialog> {
         _projectId,
         status: _status,
         priority: _priority,
+        urgent: switch (_urgency) {
+          'urgent' => true,
+          'not_urgent' => false,
+          _ => null,
+        },
+        moscow: _moscow == 'unassigned' ? null : _moscow,
         startDate: _isoDate(_startDate),
         tags: _parseTags(),
         deadline: _deadline == null ? null : _isoDate(_deadline!),
@@ -251,6 +269,59 @@ class _TaskDialogState extends State<TaskDialog> {
                 ],
                 onChanged: (value) {
                   if (value != null) setState(() => _priority = value);
+                },
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                initialValue: _moscow,
+                decoration: const InputDecoration(
+                  labelText: 'MoSCoW для проекта',
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'unassigned',
+                    child: Text('Без категории'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'must',
+                    child: Text('Must · обязательно'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'should',
+                    child: Text('Should · важно'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'could',
+                    child: Text('Could · желательно'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'wont',
+                    child: Text('Won’t · отложено'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) setState(() => _moscow = value);
+                },
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                initialValue: _urgency,
+                decoration: const InputDecoration(
+                  labelText: 'Срочность для матрицы',
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'auto',
+                    child: Text('По дедлайну (за 2 дня)'),
+                  ),
+                  DropdownMenuItem(value: 'urgent', child: Text('Срочно')),
+                  DropdownMenuItem(
+                    value: 'not_urgent',
+                    child: Text('Не срочно'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) setState(() => _urgency = value);
                 },
               ),
               const SizedBox(height: 14),

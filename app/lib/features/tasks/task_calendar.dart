@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'task.dart';
+import '../schedule/schedule_entry.dart';
 
 const _ink = Color(0xFF192B45);
 const _muted = Color(0xFF78879C);
@@ -12,6 +13,8 @@ class TaskCalendar extends StatelessWidget {
     super.key,
     required this.month,
     required this.tasksByDay,
+    required this.scheduleByDay,
+    required this.showSchedule,
     required this.selectedDay,
     required this.mobile,
     required this.loading,
@@ -20,10 +23,13 @@ class TaskCalendar extends StatelessWidget {
     required this.onDaySelected,
     required this.onRetry,
     required this.taskBuilder,
+    required this.onCancelOccurrence,
   });
 
   final DateTime month;
   final Map<int, List<Task>> tasksByDay;
+  final Map<int, List<ScheduleOccurrence>> scheduleByDay;
+  final bool showSchedule;
   final int? selectedDay;
   final bool mobile;
   final bool loading;
@@ -32,6 +38,7 @@ class TaskCalendar extends StatelessWidget {
   final ValueChanged<int> onDaySelected;
   final VoidCallback onRetry;
   final Widget Function(Task) taskBuilder;
+  final ValueChanged<ScheduleOccurrence> onCancelOccurrence;
 
   static const _months = [
     'Январь',
@@ -58,6 +65,9 @@ class TaskCalendar extends StatelessWidget {
     final isCurrentMonth =
         month.year == today.year && month.month == today.month;
     final dayTasks = tasksByDay[selectedDay] ?? const <Task>[];
+    final daySchedule = showSchedule
+        ? scheduleByDay[selectedDay] ?? const <ScheduleOccurrence>[]
+        : const <ScheduleOccurrence>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -155,8 +165,10 @@ class TaskCalendar extends StatelessWidget {
           )
         else ...[
           Text(
-            'Дедлайн ${selectedDay.toString().padLeft(2, '0')}.'
-            '${month.month.toString().padLeft(2, '0')}: ${dayTasks.length}',
+            '${selectedDay.toString().padLeft(2, '0')}.'
+            '${month.month.toString().padLeft(2, '0')}: '
+            '${dayTasks.length} задач'
+            '${showSchedule ? ' · ${daySchedule.length} занятий' : ''}',
             style: const TextStyle(
               color: _ink,
               fontSize: 18,
@@ -164,7 +176,18 @@ class TaskCalendar extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          if (dayTasks.isEmpty)
+          if (daySchedule.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(
+                '${daySchedule.length} занятий',
+                style: const TextStyle(
+                  color: Color(0xFFB77925),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          if (dayTasks.isEmpty && daySchedule.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 12),
               child: Text(
@@ -173,6 +196,43 @@ class TaskCalendar extends StatelessWidget {
               ),
             ),
           for (final task in dayTasks) taskBuilder(task),
+          for (final occurrence in daySchedule)
+            Card(
+              color: const Color(0xFFFFFAEE),
+              margin: const EdgeInsets.only(bottom: 10),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Row(
+                  children: [
+                    const Icon(Icons.school_outlined, color: Color(0xFFB77925)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            occurrence.title,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          Text(
+                            '${scheduleTime(occurrence.startTime)}–${scheduleTime(occurrence.endTime)}'
+                            '${occurrence.description.isEmpty ? '' : ' · ${occurrence.description}'}',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: _muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Отменить это занятие',
+                      onPressed: () => onCancelOccurrence(occurrence),
+                      icon: const Icon(Icons.event_busy_outlined),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ],
     );
@@ -183,6 +243,9 @@ class TaskCalendar extends StatelessWidget {
       return SizedBox(height: mobile ? 58 : 102);
     }
     final tasks = tasksByDay[day] ?? const <Task>[];
+    final schedule = showSchedule
+        ? scheduleByDay[day] ?? const <ScheduleOccurrence>[]
+        : const <ScheduleOccurrence>[];
     final selected = day == selectedDay;
     return Padding(
       padding: const EdgeInsets.all(2),
@@ -222,19 +285,35 @@ class TaskCalendar extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (tasks.isNotEmpty) ...[
+                if (tasks.isNotEmpty || schedule.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   if (mobile)
-                    Container(
-                      width: 15,
-                      height: 5,
-                      decoration: BoxDecoration(
-                        color: _blue,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
+                    Row(
+                      children: [
+                        if (tasks.isNotEmpty)
+                          Container(
+                            width: 9,
+                            height: 5,
+                            decoration: BoxDecoration(
+                              color: _blue,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                        if (tasks.isNotEmpty && schedule.isNotEmpty)
+                          const SizedBox(width: 3),
+                        if (schedule.isNotEmpty)
+                          Container(
+                            width: 9,
+                            height: 5,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDBA342),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                      ],
                     )
                   else
-                    for (final task in tasks.take(2))
+                    for (final task in tasks.take(schedule.isEmpty ? 2 : 1))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 2),
                         child: Text(
@@ -243,6 +322,21 @@ class TaskCalendar extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: _blue,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                  if (!mobile)
+                    for (final item in schedule.take(tasks.isEmpty ? 2 : 1))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Text(
+                          '${scheduleTime(item.startTime)} ${item.title}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFFB77925),
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),

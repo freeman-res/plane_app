@@ -1,9 +1,10 @@
 from datetime import date
 
 from backend.projects.repository import project_exists
+from backend.schedule.service import occurrences
 from backend.tasks import repository
 from backend.tasks.schemas import (
-    CalendarDay, CalendarMonth, SortBy, Task, TaskCreate, TaskPriority,
+    CalendarDay, CalendarMonth, SortBy, Task, TaskCreate, TaskMatrix, TaskMoscow, TaskPriority,
     TaskStatus, TaskUpdate,
 )
 
@@ -30,15 +31,49 @@ def list_tasks(
     )
 
 
-def calendar_month(year: int, month: int, project_id: int | None = None) -> CalendarMonth:
+def task_matrix(project_id: int | None = None) -> TaskMatrix:
+    groups: dict[str, list[Task]] = {
+        "urgent_important": [], "not_urgent_important": [],
+        "urgent_not_important": [], "not_urgent_not_important": [],
+    }
+    for task in repository.list_tasks(project_id=project_id, sort_by="priority"):
+        if task.status != "done":
+            groups[task.matrix_quadrant].append(task)
+    return TaskMatrix(**groups)
+
+
+def task_moscow(project_id: int | None = None) -> TaskMoscow:
+    groups: dict[str, list[Task]] = {
+        "must": [], "should": [], "could": [], "wont": [], "unassigned": [],
+    }
+    for task in repository.list_tasks(project_id=project_id, sort_by="priority"):
+        if task.status != "done":
+            groups[task.moscow or "unassigned"].append(task)
+    return TaskMoscow(**groups)
+
+
+def calendar_month(
+    year: int, month: int, project_id: int | None = None,
+    include_schedule: bool = False,
+) -> CalendarMonth:
+    from calendar import monthrange
+
     days: dict[date, list[Task]] = {}
     for task in repository.calendar_tasks(year, month, project_id):
         assert task.deadline is not None
         days.setdefault(task.deadline, []).append(task)
+    scheduled = {}
+    if include_schedule:
+        first = date(year, month, 1)
+        last = date(year, month, monthrange(year, month)[1])
+        for item in occurrences(first, last, project_id):
+            scheduled.setdefault(item.date, []).append(item)
     return CalendarMonth(
         year=year,
         month=month,
-        days=[CalendarDay(date=day, tasks=tasks) for day, tasks in days.items()],
+        days=[CalendarDay(
+            date=day, tasks=days.get(day, []), schedule=scheduled.get(day, []),
+        ) for day in sorted(days.keys() | scheduled.keys())],
     )
 
 

@@ -8,7 +8,7 @@ from backend.tasks.schemas import SortBy, Task, TaskCreate, TaskPriority, TaskSt
 
 
 _TASK_COLUMNS = (
-    "id, title, description, status, project_id, start_date, deadline, priority"
+    "id, title, description, status, project_id, start_date, deadline, priority, urgent, moscow"
 )
 
 
@@ -123,8 +123,8 @@ def create_task(task: TaskCreate) -> Task:
         conn.execute("PRAGMA foreign_keys = ON")
         cursor = conn.execute(
             "INSERT INTO tasks "
-            "(title, description, status, project_id, start_date, deadline, priority) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(title, description, status, project_id, start_date, deadline, priority, urgent, moscow) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task.title,
                 task.description,
@@ -133,6 +133,8 @@ def create_task(task: TaskCreate) -> Task:
                 task.start_date.isoformat(),
                 task.deadline.isoformat() if task.deadline else None,
                 task.priority,
+                task.urgent,
+                task.moscow,
             ),
         )
         task_id = cursor.lastrowid
@@ -149,7 +151,7 @@ def update_task(
         field
         for field in (
             "title", "description", "status", "project_id", "start_date",
-            "deadline", "priority"
+            "deadline", "priority", "urgent", "moscow"
         )
         if field in changes
     ]

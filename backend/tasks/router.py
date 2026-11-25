@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.tasks import service
 from backend.tasks.schemas import (
-    CalendarMonth, SortBy, Task, TaskCreate, TaskPriority, TaskStatus, TaskUpdate,
+    CalendarMonth, SortBy, Task, TaskCreate, TaskMatrix, TaskMoscow, TaskPriority, TaskStatus, TaskUpdate,
 )
 
 
@@ -32,14 +32,27 @@ def get_overdue_tasks(project_id: int | None = None) -> list[Task]:
     return service.list_tasks(project_id=project_id, sort_by="deadline", overdue=True)
 
 
+@router.get("/tasks/matrix", response_model=TaskMatrix)
+def get_task_matrix(project_id: int | None = None) -> TaskMatrix:
+    return service.task_matrix(project_id)
+
+
+@router.get("/tasks/moscow", response_model=TaskMoscow)
+def get_task_moscow(project_id: int | None = None) -> TaskMoscow:
+    return service.task_moscow(project_id)
+
+
 @router.get("/tasks/calendar", response_model=CalendarMonth)
 def get_calendar(
     year: Annotated[int | None, Query(ge=1, le=9999)] = None,
     month: Annotated[int | None, Query(ge=1, le=12)] = None,
     project_id: int | None = None,
+    include_schedule: bool = False,
 ) -> CalendarMonth:
     today = date.today()
-    return service.calendar_month(year or today.year, month or today.month, project_id)
+    return service.calendar_month(
+        year or today.year, month or today.month, project_id, include_schedule,
+    )
 
 
 @router.post("/tasks", response_model=Task, status_code=201)

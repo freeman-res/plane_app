@@ -16,6 +16,7 @@ htmlcov/
 backend/*.db
 backend/*.db-*
 backend/*.sqlite*
+backend/uploads/
 .vscode/
 
 # Flutter and Dart generated files

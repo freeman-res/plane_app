@@ -5,17 +5,25 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/api_client.dart';
 import '../projects/project.dart';
 import '../projects/project_dialog.dart';
+import '../notes/notes_page.dart';
+import '../schedule/schedule_dialog.dart';
+import '../schedule/schedule_entry.dart';
+import '../schedule/schedule_page.dart';
 import 'calendar_month.dart';
 import 'task_calendar.dart';
 import 'task.dart';
 import 'task_dialog.dart';
+import 'task_matrix_board.dart';
+import 'task_moscow_board.dart';
 
-const _ink = Color(0xFF192B45);
-const _muted = Color(0xFF78879C);
-const _blue = Color(0xFF4269EF);
-const _line = Color(0xFFE7ECF4);
+const _ink = Color(0xFF1A2B47);
+const _muted = Color(0xFF7B8BA2);
+const _blue = Color(0xFF3267D5);
+const _line = Color(0xFFE4EAF2);
+const _navy = Color(0xFF172B49);
+const _navMuted = Color(0xFF9CADC6);
 
-enum _TaskView { board, list, calendar }
+enum _TaskView { board, list, matrix, moscow, calendar }
 
 class TasksPage extends StatefulWidget {
   const TasksPage({super.key});
@@ -31,6 +39,10 @@ class _TasksPageState extends State<TasksPage> {
   List<Task>? _filteredTasks;
   List<Project> _projects = [];
   int? _selectedProjectId;
+  bool _notesMode = false;
+  bool _scheduleMode = false;
+  bool _showSchedule = false;
+  int? _notesTaskId;
   _TaskView _view = _TaskView.board;
   String? _sortBy;
   bool _descending = false;
@@ -150,6 +162,7 @@ class _TasksPageState extends State<TasksPage> {
     final request = ++_calendarRequest;
     final month = _displayMonth;
     final projectId = _selectedProjectId;
+    final showSchedule = _showSchedule;
     setState(() {
       _calendarLoading = true;
       _calendarError = null;
@@ -159,12 +172,14 @@ class _TasksPageState extends State<TasksPage> {
         year: month.year,
         month: month.month,
         projectId: projectId != null && projectId > 0 ? projectId : null,
+        includeSchedule: showSchedule,
       );
       if (mounted &&
           request == _calendarRequest &&
           _displayMonth.year == month.year &&
           _displayMonth.month == month.month &&
-          _selectedProjectId == projectId) {
+          _selectedProjectId == projectId &&
+          _showSchedule == showSchedule) {
         setState(() => _calendar = calendar);
       }
     } catch (error) {
@@ -218,6 +233,24 @@ class _TasksPageState extends State<TasksPage> {
     if (view == _TaskView.calendar) _loadCalendar();
   }
 
+  Future<void> _moveTaskInMatrix(Task task, String quadrant) async {
+    await _perform(() async {
+      await _api.moveTaskInMatrix(
+        task,
+        important:
+            quadrant == 'urgent_important' ||
+            quadrant == 'not_urgent_important',
+        urgent: quadrant.startsWith('urgent_'),
+      );
+    });
+  }
+
+  Future<void> _setMoscow(Task task, String category) async {
+    await _perform(() async {
+      await _api.setMoscow(task.id, category == 'unassigned' ? null : category);
+    });
+  }
+
   Future<void> _refresh() async {
     await _loadTasks();
     if (mounted && _view == _TaskView.calendar) await _loadCalendar();
@@ -263,6 +296,8 @@ class _TasksPageState extends State<TasksPage> {
         status: draft.status,
         deadline: draft.deadline,
         priority: draft.priority,
+        urgent: draft.urgent,
+        moscow: draft.moscow,
         tags: draft.tags,
       );
     });
@@ -285,6 +320,10 @@ class _TasksPageState extends State<TasksPage> {
         deadline: draft.deadline,
         updateDeadline: true,
         priority: draft.priority,
+        urgent: draft.urgent,
+        updateUrgent: true,
+        moscow: draft.moscow,
+        updateMoscow: true,
         tags: draft.tags,
       );
     });
@@ -385,6 +424,8 @@ class _TasksPageState extends State<TasksPage> {
 
   void _openOverdue(bool drawer) {
     setState(() {
+      _notesMode = false;
+      _scheduleMode = false;
       _selectedProjectId = null;
       _overdueOnly = true;
       _statusFilter = null;
@@ -398,6 +439,8 @@ class _TasksPageState extends State<TasksPage> {
 
   void _selectProject(int? id, bool drawer) {
     setState(() {
+      _notesMode = false;
+      _scheduleMode = false;
       _selectedProjectId = id;
       _overdueOnly = false;
       if (_view == _TaskView.calendar) _calendar = null;
@@ -405,6 +448,96 @@ class _TasksPageState extends State<TasksPage> {
     if (_hasFilters) _loadTasks();
     if (_view == _TaskView.calendar) _loadCalendar();
     if (drawer) Navigator.of(context).pop();
+  }
+
+  void _openNotes(bool drawer) {
+    setState(() {
+      _notesMode = true;
+      _scheduleMode = false;
+      _notesTaskId = null;
+    });
+    if (drawer) Navigator.of(context).pop();
+  }
+
+  void _openTaskNotes(Task task) {
+    setState(() {
+      _notesMode = true;
+      _scheduleMode = false;
+      _notesTaskId = task.id;
+    });
+  }
+
+  void _openSchedule(bool drawer) {
+    setState(() {
+      _notesMode = false;
+      _scheduleMode = true;
+    });
+    if (drawer) Navigator.of(context).pop();
+  }
+
+  void _openScheduleCalendar() {
+    setState(() {
+      _scheduleMode = false;
+      _view = _TaskView.calendar;
+      _showSchedule = true;
+    });
+    _loadCalendar();
+  }
+
+  void _toggleSchedule(bool enabled) {
+    setState(() {
+      _showSchedule = enabled;
+      _calendar = null;
+    });
+    _loadCalendar();
+  }
+
+  Future<void> _createSchedule() async {
+    final initialDate = _selectedDay == null
+        ? DateTime(_displayMonth.year, _displayMonth.month, 1)
+        : DateTime(_displayMonth.year, _displayMonth.month, _selectedDay!);
+    final draft = await showDialog<ScheduleDraft>(
+      context: context,
+      builder: (context) => ScheduleDialog(
+        projects: _projects,
+        projectId: _selectedProjectId != null && _selectedProjectId! > 0
+            ? _selectedProjectId
+            : null,
+        initialDate: initialDate,
+      ),
+    );
+    if (draft == null || !mounted) return;
+    await _perform(() async {
+      await _api.createSchedule(draft);
+    });
+  }
+
+  Future<void> _cancelOccurrence(ScheduleOccurrence occurrence) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Отменить занятие?'),
+        content: Text(
+          '«${occurrence.title}» ${occurrence.date} будет отменено. '
+          'Остальные занятия в серии останутся. '
+          'Восстановить дату можно в разделе «Расписание».',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Назад'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Отменить занятие'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _perform(() async {
+      await _api.skipScheduleDate(occurrence.scheduleId, occurrence.date);
+    });
   }
 
   List<Task> get _visibleTasks {
@@ -449,6 +582,19 @@ class _TasksPageState extends State<TasksPage> {
     return result;
   }
 
+  Map<int, List<ScheduleOccurrence>> get _calendarScheduleByDay {
+    final result = <int, List<ScheduleOccurrence>>{};
+    if (!_showSchedule) return result;
+    for (final day in _calendar?.days ?? const <CalendarDay>[]) {
+      final date = DateTime.tryParse(day.date);
+      if (date == null) continue;
+      result[date.day] = day.schedule
+          .where((item) => _selectedProjectId != -1 || item.projectId == null)
+          .toList();
+    }
+    return result;
+  }
+
   List<String> get _availableTags {
     final names = <String, String>{};
     for (final task in _tasks) {
@@ -486,76 +632,114 @@ class _TasksPageState extends State<TasksPage> {
 
   Widget _sidebar(bool drawer) {
     return Container(
-      width: 260,
-      color: Colors.white,
+      width: 252,
+      color: _navy,
       child: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(18, 24, 18, 16),
+          padding: const EdgeInsets.fromLTRB(15, 22, 15, 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
                   Container(
-                    width: 36,
-                    height: 36,
+                    width: 38,
+                    height: 38,
                     decoration: BoxDecoration(
-                      color: _blue,
-                      borderRadius: BorderRadius.circular(10),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF5D91FF), Color(0xFF416DD9)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(11),
                     ),
                     child: const Icon(Icons.check_rounded, color: Colors.white),
                   ),
                   const SizedBox(width: 12),
                   const Text(
                     'WorkNotes',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      letterSpacing: .2,
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 38),
+              const SizedBox(height: 42),
               const Text(
                 'РАБОЧЕЕ ПРОСТРАНСТВО',
-                style: TextStyle(color: _muted, fontSize: 11, letterSpacing: 1),
+                style: TextStyle(
+                  color: _navMuted,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.15,
+                ),
               ),
               const SizedBox(height: 12),
               _navigationRow(
                 'Все задачи',
                 Icons.grid_view_rounded,
-                _selectedProjectId == null && !_overdueOnly,
+                !_notesMode &&
+                    !_scheduleMode &&
+                    _selectedProjectId == null &&
+                    !_overdueOnly,
                 _tasks.length,
                 () => _selectProject(null, drawer),
               ),
               _navigationRow(
                 'Просрочено',
                 Icons.warning_amber_rounded,
-                _overdueOnly && _selectedProjectId == null,
+                !_notesMode &&
+                    !_scheduleMode &&
+                    _overdueOnly &&
+                    _selectedProjectId == null,
                 _tasks.where((task) => task.isOverdue).length,
                 () => _openOverdue(drawer),
               ),
               _navigationRow(
                 'Без проекта',
                 Icons.inbox_outlined,
-                _selectedProjectId == -1,
+                !_notesMode && !_scheduleMode && _selectedProjectId == -1,
                 _tasks.where((task) => task.projectId == null).length,
                 () => _selectProject(-1, drawer),
               ),
-              const SizedBox(height: 26),
+              _navigationRow(
+                'Заметки',
+                Icons.sticky_note_2_outlined,
+                _notesMode,
+                null,
+                () => _openNotes(drawer),
+              ),
+              _navigationRow(
+                'Расписание',
+                Icons.event_note_outlined,
+                _scheduleMode,
+                null,
+                () => _openSchedule(drawer),
+              ),
+              const SizedBox(height: 28),
               Row(
                 children: [
                   const Expanded(
                     child: Text(
                       'ПРОЕКТЫ',
                       style: TextStyle(
-                        color: _muted,
-                        fontSize: 11,
-                        letterSpacing: 1,
+                        color: _navMuted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.15,
                       ),
                     ),
                   ),
                   IconButton(
                     tooltip: 'Новый проект',
                     onPressed: _saving ? null : _createProject,
-                    icon: const Icon(Icons.add_rounded, color: _blue),
+                    icon: const Icon(
+                      Icons.add_rounded,
+                      color: Color(0xFF78ACFF),
+                    ),
                   ),
                 ],
               ),
@@ -565,7 +749,7 @@ class _TasksPageState extends State<TasksPage> {
                         padding: EdgeInsets.only(top: 14),
                         child: Text(
                           'Здесь появятся ваши проекты',
-                          style: TextStyle(color: _muted, fontSize: 13),
+                          style: TextStyle(color: _navMuted, fontSize: 13),
                         ),
                       )
                     : ListView.builder(
@@ -575,16 +759,20 @@ class _TasksPageState extends State<TasksPage> {
                           return _navigationRow(
                             project.name,
                             Icons.folder_outlined,
-                            _selectedProjectId == project.id,
+                            !_notesMode &&
+                                !_scheduleMode &&
+                                _selectedProjectId == project.id,
                             _tasks
                                 .where((task) => task.projectId == project.id)
                                 .length,
                             () => _selectProject(project.id, drawer),
+                            accent: _projectAccent(project.id),
                             trailing: PopupMenuButton<String>(
                               tooltip: 'Действия с проектом',
                               icon: const Icon(
                                 Icons.more_vert_rounded,
                                 size: 18,
+                                color: _navMuted,
                               ),
                               onSelected: (value) {
                                 if (value == 'delete') _deleteProject(project);
@@ -600,12 +788,12 @@ class _TasksPageState extends State<TasksPage> {
                         },
                       ),
               ),
-              const Divider(color: _line),
+              const Divider(color: Color(0xFF344B6A)),
               const Padding(
                 padding: EdgeInsets.only(top: 10),
                 child: Text(
                   'Место для ваших идей и дел',
-                  style: TextStyle(color: _muted, fontSize: 12),
+                  style: TextStyle(color: _navMuted, fontSize: 12),
                 ),
               ),
             ],
@@ -615,28 +803,43 @@ class _TasksPageState extends State<TasksPage> {
     );
   }
 
+  Color _projectAccent(int id) => const [
+    Color(0xFF6EA9FF),
+    Color(0xFFFFBC70),
+    Color(0xFF73D4B7),
+    Color(0xFFD09DF3),
+    Color(0xFFFF8FA4),
+  ][id.abs() % 5];
+
   Widget _navigationRow(
     String title,
     IconData icon,
     bool selected,
-    int count,
+    int? count,
     VoidCallback onTap, {
     Widget? trailing,
+    Color? accent,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 5),
       child: Material(
-        color: selected ? const Color(0xFFEBF0FF) : Colors.transparent,
+        color: selected ? const Color(0xFF294C7C) : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: onTap,
           child: SizedBox(
-            height: 46,
+            height: 43,
             child: Row(
               children: [
                 const SizedBox(width: 10),
-                Icon(icon, size: 19, color: selected ? _blue : _muted),
+                Icon(
+                  icon,
+                  size: 19,
+                  color:
+                      accent ??
+                      (selected ? const Color(0xFF87B5FF) : _navMuted),
+                ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -644,12 +847,31 @@ class _TasksPageState extends State<TasksPage> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: selected ? _blue : _ink,
+                      color: selected ? Colors.white : const Color(0xFFDCE6F4),
                       fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                     ),
                   ),
                 ),
-                Text('$count', style: const TextStyle(color: _muted)),
+                if (count != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? const Color(0xFF3B6094)
+                          : const Color(0xFF243B5B),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '$count',
+                      style: const TextStyle(
+                        color: Color(0xFFC7D7EB),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
                 if (trailing != null) trailing,
                 const SizedBox(width: 8),
               ],
@@ -727,23 +949,34 @@ class _TasksPageState extends State<TasksPage> {
               '${due.month.toString().padLeft(2, '0')}.'
               '${due.year}';
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.fromLTRB(12, 14, 7, 14),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(10, 12, 7, 12),
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border.all(color: _line),
-        borderRadius: BorderRadius.circular(13),
+        borderRadius: BorderRadius.circular(11),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x0A263C63),
-            blurRadius: 12,
-            offset: Offset(0, 4),
+            color: Color(0x09263C63),
+            blurRadius: 10,
+            offset: Offset(0, 3),
           ),
         ],
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            width: 4,
+            height: 34,
+            margin: const EdgeInsets.only(top: 8, right: 4),
+            decoration: BoxDecoration(
+              color: task.isDone
+                  ? const Color(0xFF52B99A)
+                  : _priorityColor(task.priority),
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
           Checkbox(
             value: task.isDone,
             onChanged: _saving
@@ -763,7 +996,7 @@ class _TasksPageState extends State<TasksPage> {
                       style: TextStyle(
                         color: task.isDone ? _muted : _ink,
                         fontWeight: FontWeight.w700,
-                        fontSize: 15,
+                        fontSize: 14,
                         decoration: task.isDone
                             ? TextDecoration.lineThrough
                             : null,
@@ -894,10 +1127,12 @@ class _TasksPageState extends State<TasksPage> {
             icon: const Icon(Icons.more_horiz_rounded, color: _muted),
             onSelected: (value) {
               if (value == 'edit') _editTask(task);
+              if (value == 'notes') _openTaskNotes(task);
               if (value == 'delete') _deleteTask(task);
             },
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'edit', child: Text('Редактировать')),
+              PopupMenuItem(value: 'notes', child: Text('Заметки задачи')),
               PopupMenuItem(value: 'delete', child: Text('Удалить')),
             ],
           ),
@@ -916,36 +1151,62 @@ class _TasksPageState extends State<TasksPage> {
     return SizedBox(
       width: width,
       child: Container(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: const Color(0xFFF4F6FB),
+          color: const Color(0xFFF3F6FB),
           border: Border.all(color: _line),
-          borderRadius: BorderRadius.circular(15),
+          borderRadius: BorderRadius.circular(14),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                CircleAvatar(radius: 5, backgroundColor: accent),
-                const SizedBox(width: 10),
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: _ink,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 15,
+            Container(
+              padding: const EdgeInsets.fromLTRB(11, 5, 4, 5),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: .10),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(radius: 5, backgroundColor: accent),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        color: _ink,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Text('${tasks.length}', style: const TextStyle(color: _muted)),
-                const Spacer(),
-                IconButton(
-                  tooltip: 'Добавить задачу в «$title»',
-                  onPressed: _saving ? null : () => _createTask(status: status),
-                  icon: const Icon(Icons.add_rounded, color: _muted),
-                ),
-              ],
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: Text(
+                      '${tasks.length}',
+                      style: TextStyle(
+                        color: accent,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Добавить задачу в «$title»',
+                    onPressed: _saving
+                        ? null
+                        : () => _createTask(status: status),
+                    icon: Icon(Icons.add_rounded, color: accent, size: 20),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             if (tasks.isEmpty)
@@ -975,6 +1236,25 @@ class _TasksPageState extends State<TasksPage> {
   }
 
   Widget _viewSelector() => SegmentedButton<_TaskView>(
+    showSelectedIcon: false,
+    style: ButtonStyle(
+      visualDensity: VisualDensity.compact,
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 11, vertical: 12),
+      ),
+      side: const WidgetStatePropertyAll(BorderSide(color: _line)),
+      backgroundColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected)
+            ? const Color(0xFFEAF0FF)
+            : Colors.white,
+      ),
+      foregroundColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected) ? _blue : _muted,
+      ),
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+      ),
+    ),
     segments: const [
       ButtonSegment(
         value: _TaskView.board,
@@ -985,6 +1265,16 @@ class _TasksPageState extends State<TasksPage> {
         value: _TaskView.list,
         icon: Icon(Icons.view_list_rounded),
         label: Text('Список'),
+      ),
+      ButtonSegment(
+        value: _TaskView.matrix,
+        icon: Icon(Icons.grid_4x4_outlined),
+        label: Text('Матрица'),
+      ),
+      ButtonSegment(
+        value: _TaskView.moscow,
+        icon: Icon(Icons.category_outlined),
+        label: Text('MoSCoW'),
       ),
       ButtonSegment(
         value: _TaskView.calendar,
@@ -1005,6 +1295,7 @@ class _TasksPageState extends State<TasksPage> {
         .toList();
     final padding = mobile ? 18.0 : 32.0;
     final available = width - 2 * padding;
+    final toolbarWidth = available - 32;
     final columnWidth = mobile
         ? 300.0
         : ((available - 32) / 3).clamp(290.0, 480.0);
@@ -1029,11 +1320,23 @@ class _TasksPageState extends State<TasksPage> {
                 ),
               const SizedBox(height: 8),
               Text(
+                'РАБОЧЕЕ ПРОСТРАНСТВО  /  ${_pageTitle.toUpperCase()}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: _muted,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.1,
+                ),
+              ),
+              const SizedBox(height: 13),
+              Text(
                 _pageTitle,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: mobile ? 27 : 31,
+                  fontSize: mobile ? 27 : 34,
                   fontWeight: FontWeight.w800,
                   color: _ink,
                 ),
@@ -1043,188 +1346,246 @@ class _TasksPageState extends State<TasksPage> {
                 '${tasks.length} задач · ${done.length} выполнено',
                 style: const TextStyle(color: _muted),
               ),
-              const SizedBox(height: 26),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  SizedBox(
-                    width: mobile ? available : 300,
-                    child: TextField(
-                      controller: _search,
-                      decoration: const InputDecoration(
-                        hintText: 'Поиск задач',
-                        prefixIcon: Icon(Icons.search_rounded),
-                      ),
-                    ),
-                  ),
-                  if (mobile)
-                    SizedBox(
-                      width: available,
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: _viewSelector(),
-                      ),
-                    )
-                  else
-                    _viewSelector(),
-                  if (_view != _TaskView.calendar)
-                    SizedBox(
-                      width: 195,
-                      child: DropdownButtonFormField<String>(
-                        key: ValueKey(_sortBy),
-                        initialValue: _sortBy ?? 'none',
-                        isExpanded: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Сортировка',
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 9,
+              const SizedBox(height: 24),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border.all(color: _line),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: mobile ? toolbarWidth : 300,
+                          child: TextField(
+                            controller: _search,
+                            decoration: const InputDecoration(
+                              hintText: 'Поиск задач',
+                              prefixIcon: Icon(Icons.search_rounded),
+                            ),
                           ),
                         ),
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'none',
-                            child: Text('По умолчанию'),
+                        SizedBox(
+                          width: mobile
+                              ? toolbarWidth
+                              : (toolbarWidth < 620 ? toolbarWidth : 620.0),
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: _viewSelector(),
                           ),
-                          DropdownMenuItem(
-                            value: 'priority',
-                            child: Text('По приоритету'),
+                        ),
+                        if (_view != _TaskView.calendar)
+                          SizedBox(
+                            width: 195,
+                            child: DropdownButtonFormField<String>(
+                              key: ValueKey(_sortBy),
+                              initialValue: _sortBy ?? 'none',
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Сортировка',
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 9,
+                                ),
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                  value: 'none',
+                                  child: Text('По умолчанию'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'priority',
+                                  child: Text('По приоритету'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'deadline',
+                                  child: Text('По дедлайну'),
+                                ),
+                              ],
+                              onChanged: _loading
+                                  ? null
+                                  : (value) => _changeSort(
+                                      value == 'none' ? null : value,
+                                    ),
+                            ),
                           ),
-                          DropdownMenuItem(
-                            value: 'deadline',
-                            child: Text('По дедлайну'),
+                        if (_view != _TaskView.calendar)
+                          IconButton(
+                            tooltip: _descending
+                                ? 'Обратный порядок'
+                                : 'Основной порядок',
+                            onPressed: _sortBy == null || _loading
+                                ? null
+                                : () {
+                                    setState(() => _descending = !_descending);
+                                    _loadTasks();
+                                  },
+                            icon: Icon(
+                              _descending
+                                  ? Icons.arrow_upward_rounded
+                                  : Icons.arrow_downward_rounded,
+                            ),
+                          ),
+                        FilledButton.icon(
+                          onPressed: _saving ? null : _createTask,
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('Новая задача'),
+                        ),
+                        if (_view == _TaskView.calendar) ...[
+                          OutlinedButton.icon(
+                            onPressed: _saving ? null : _createSchedule,
+                            icon: const Icon(Icons.event_note_outlined),
+                            label: const Text('Добавить занятие'),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text('Показывать расписание'),
+                              const SizedBox(width: 5),
+                              Switch(
+                                value: _showSchedule,
+                                onChanged: _calendarLoading
+                                    ? null
+                                    : _toggleSchedule,
+                              ),
+                            ],
                           ),
                         ],
-                        onChanged: _loading
-                            ? null
-                            : (value) =>
-                                  _changeSort(value == 'none' ? null : value),
-                      ),
+                        IconButton(
+                          tooltip: 'Обновить',
+                          onPressed: _loading || _saving ? null : _refresh,
+                          icon: const Icon(Icons.refresh_rounded),
+                        ),
+                      ],
                     ),
-                  if (_view != _TaskView.calendar)
-                    IconButton(
-                      tooltip: _descending
-                          ? 'Обратный порядок'
-                          : 'Основной порядок',
-                      onPressed: _sortBy == null || _loading
-                          ? null
-                          : () {
-                              setState(() => _descending = !_descending);
-                              _loadTasks();
-                            },
-                      icon: Icon(
-                        _descending
-                            ? Icons.arrow_upward_rounded
-                            : Icons.arrow_downward_rounded,
-                      ),
+                    const SizedBox(height: 14),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 158,
+                          child: DropdownButtonFormField<String>(
+                            key: ValueKey('status-\$_statusFilter'),
+                            initialValue: _statusFilter ?? 'all',
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Статус',
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'all',
+                                child: Text('Все'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'todo',
+                                child: Text('Сделать'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'in_progress',
+                                child: Text('В работе'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'done',
+                                child: Text('Готово'),
+                              ),
+                            ],
+                            onChanged: _loading
+                                ? null
+                                : (value) => _changeFilters(
+                                    status: value == 'all' ? null : value,
+                                    changeStatus: true,
+                                  ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 158,
+                          child: DropdownButtonFormField<String>(
+                            key: ValueKey('priority-\$_priorityFilter'),
+                            initialValue: _priorityFilter ?? 'all',
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Приоритет',
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'all',
+                                child: Text('Все'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'high',
+                                child: Text('Высокий'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'medium',
+                                child: Text('Средний'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'low',
+                                child: Text('Низкий'),
+                              ),
+                            ],
+                            onChanged: _loading
+                                ? null
+                                : (value) => _changeFilters(
+                                    priority: value == 'all' ? null : value,
+                                    changePriority: true,
+                                  ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 190,
+                          child: DropdownButtonFormField<String>(
+                            key: ValueKey('tag-\$_tagFilter'),
+                            initialValue: _tagFilter ?? '',
+                            isExpanded: true,
+                            decoration: const InputDecoration(labelText: 'Тег'),
+                            items: [
+                              const DropdownMenuItem(
+                                value: '',
+                                child: Text('Все теги'),
+                              ),
+                              for (final tag in _availableTags)
+                                DropdownMenuItem(value: tag, child: Text(tag)),
+                            ],
+                            onChanged: _loading
+                                ? null
+                                : (value) => _changeFilters(
+                                    tag: value == '' ? null : value,
+                                    changeTag: true,
+                                  ),
+                          ),
+                        ),
+                        FilterChip(
+                          label: const Text('Просроченные'),
+                          avatar: const Icon(
+                            Icons.warning_amber_rounded,
+                            size: 18,
+                          ),
+                          selected: _overdueOnly,
+                          onSelected: _loading
+                              ? null
+                              : (value) => _changeFilters(overdue: value),
+                        ),
+                        if (_hasFilters)
+                          TextButton(
+                            onPressed: _loading ? null : _clearFilters,
+                            child: const Text('Сбросить фильтры'),
+                          ),
+                      ],
                     ),
-                  FilledButton.icon(
-                    onPressed: _saving ? null : _createTask,
-                    icon: const Icon(Icons.add_rounded),
-                    label: const Text('Новая задача'),
-                  ),
-                  IconButton(
-                    tooltip: 'Обновить',
-                    onPressed: _loading || _saving ? null : _refresh,
-                    icon: const Icon(Icons.refresh_rounded),
-                  ),
-                ],
+                  ],
+                ),
               ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  SizedBox(
-                    width: 158,
-                    child: DropdownButtonFormField<String>(
-                      key: ValueKey('status-\$_statusFilter'),
-                      initialValue: _statusFilter ?? 'all',
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Статус'),
-                      items: const [
-                        DropdownMenuItem(value: 'all', child: Text('Все')),
-                        DropdownMenuItem(value: 'todo', child: Text('Сделать')),
-                        DropdownMenuItem(
-                          value: 'in_progress',
-                          child: Text('В работе'),
-                        ),
-                        DropdownMenuItem(value: 'done', child: Text('Готово')),
-                      ],
-                      onChanged: _loading
-                          ? null
-                          : (value) => _changeFilters(
-                              status: value == 'all' ? null : value,
-                              changeStatus: true,
-                            ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 158,
-                    child: DropdownButtonFormField<String>(
-                      key: ValueKey('priority-\$_priorityFilter'),
-                      initialValue: _priorityFilter ?? 'all',
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Приоритет'),
-                      items: const [
-                        DropdownMenuItem(value: 'all', child: Text('Все')),
-                        DropdownMenuItem(value: 'high', child: Text('Высокий')),
-                        DropdownMenuItem(
-                          value: 'medium',
-                          child: Text('Средний'),
-                        ),
-                        DropdownMenuItem(value: 'low', child: Text('Низкий')),
-                      ],
-                      onChanged: _loading
-                          ? null
-                          : (value) => _changeFilters(
-                              priority: value == 'all' ? null : value,
-                              changePriority: true,
-                            ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 190,
-                    child: DropdownButtonFormField<String>(
-                      key: ValueKey('tag-\$_tagFilter'),
-                      initialValue: _tagFilter ?? '',
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Тег'),
-                      items: [
-                        const DropdownMenuItem(
-                          value: '',
-                          child: Text('Все теги'),
-                        ),
-                        for (final tag in _availableTags)
-                          DropdownMenuItem(value: tag, child: Text(tag)),
-                      ],
-                      onChanged: _loading
-                          ? null
-                          : (value) => _changeFilters(
-                              tag: value == '' ? null : value,
-                              changeTag: true,
-                            ),
-                    ),
-                  ),
-                  FilterChip(
-                    label: const Text('Просроченные'),
-                    avatar: const Icon(Icons.warning_amber_rounded, size: 18),
-                    selected: _overdueOnly,
-                    onSelected: _loading
-                        ? null
-                        : (value) => _changeFilters(overdue: value),
-                  ),
-                  if (_hasFilters)
-                    TextButton(
-                      onPressed: _loading ? null : _clearFilters,
-                      child: const Text('Сбросить фильтры'),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 26),
+              const SizedBox(height: 24),
               if (_error != null)
                 Card(
                   color: Theme.of(context).colorScheme.errorContainer,
@@ -1305,10 +1666,24 @@ class _TasksPageState extends State<TasksPage> {
                     ],
                   ),
                 )
+              else if (_view == _TaskView.matrix)
+                TaskMatrixBoard(
+                  tasks: tasks,
+                  taskBuilder: _taskCard,
+                  onMove: _moveTaskInMatrix,
+                )
+              else if (_view == _TaskView.moscow)
+                TaskMoscowBoard(
+                  tasks: tasks,
+                  taskBuilder: _taskCard,
+                  onMove: _setMoscow,
+                )
               else if (_view == _TaskView.calendar)
                 TaskCalendar(
                   month: _displayMonth,
                   tasksByDay: _calendarTasksByDay,
+                  scheduleByDay: _calendarScheduleByDay,
+                  showSchedule: _showSchedule,
                   selectedDay: _selectedDay,
                   mobile: mobile,
                   loading: _calendarLoading,
@@ -1317,6 +1692,7 @@ class _TasksPageState extends State<TasksPage> {
                   onDaySelected: (day) => setState(() => _selectedDay = day),
                   onRetry: _loadCalendar,
                   taskBuilder: _taskCard,
+                  onCancelOccurrence: _cancelOccurrence,
                 )
               else
                 ConstrainedBox(
@@ -1338,15 +1714,42 @@ class _TasksPageState extends State<TasksPage> {
       builder: (context, constraints) {
         final mobile = constraints.maxWidth < 800;
         return Scaffold(
-          drawer: mobile ? Drawer(width: 260, child: _sidebar(true)) : null,
+          drawer: mobile ? Drawer(width: 252, child: _sidebar(true)) : null,
           body: Row(
             children: [
               if (!mobile) _sidebar(false),
               Expanded(
-                child: _content(
-                  mobile ? constraints.maxWidth : constraints.maxWidth - 260,
-                  mobile,
-                ),
+                child: _scheduleMode
+                    ? SchedulePage(
+                        api: _api,
+                        projects: _projects,
+                        onChanged: () {
+                          if (_showSchedule) _loadCalendar();
+                        },
+                        onShowCalendar: _openScheduleCalendar,
+                        showMenu: mobile,
+                        selectedProjectId:
+                            _selectedProjectId != null &&
+                                _selectedProjectId! > 0
+                            ? _selectedProjectId
+                            : null,
+                      )
+                    : _notesMode
+                    ? NotesPage(
+                        api: _api,
+                        projects: _projects,
+                        tasks: _tasks,
+                        onTasksChanged: _loadTasks,
+                        showMenu: mobile,
+                        taskId: _notesTaskId,
+                        onClearTask: () => setState(() => _notesTaskId = null),
+                      )
+                    : _content(
+                        mobile
+                            ? constraints.maxWidth
+                            : constraints.maxWidth - 252,
+                        mobile,
+                      ),
               ),
             ],
           ),
